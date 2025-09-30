@@ -1,17 +1,24 @@
-// api/epub.js — Upstash Redis (REST) en Edge Runtime, leyendo JSON {result:...}
+// api/epub.js — Upstash Redis (REST) Edge Runtime con soporte SVG
 export const config = { runtime: "edge" };
 
 export default async function handler(req) {
-  const headers = {
+  const headersJSON = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
   };
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+  const headersSVG = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": "no-store",
+    "Content-Type": "image/svg+xml; charset=utf-8",
+  };
 
-  // Lee variables con cualquiera de los nombres comunes
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: headersJSON });
+
   const getEnv = (k) =>
     (typeof process !== "undefined" && process.env?.[k]) ||
     (typeof Deno !== "undefined" && Deno.env.get(k));
@@ -30,29 +37,18 @@ export default async function handler(req) {
 
   const u = new URL(req.url);
   const action = (u.searchParams.get("action") || "get").toLowerCase();
-
-  // Diagnóstico opcional
-  if (action === "diag") {
-    return new Response(
-      JSON.stringify({
-        runtime: "edge",
-        hasUrl: Boolean(url),
-        hasToken: Boolean(token),
-        urlPreview: url ? url.slice(0, 30) + "..." : null,
-      }),
-      { status: 200, headers }
-    );
-  }
+  const format = (u.searchParams.get("format") || "json").toLowerCase();
+  const KEY = "las_marginadas_hijas_de_eva:descargas_epub";
 
   if (!url || !token) {
-    return new Response(JSON.stringify({ value: 0, note: "upstash-env-missing" }), { status: 200, headers });
+    if (format === "svg") {
+      return new Response(svgNumber(0), { status: 200, headers: headersSVG });
+    }
+    return new Response(JSON.stringify({ value: 0, note: "upstash-env-missing" }), { status: 200, headers: headersJSON });
   }
-
-  const KEY = "las_marginadas_hijas_de_eva:descargas_epub";
 
   try {
     if (action === "hit") {
-      // INCR key → { result: <nuevo_valor> }
       const incr = await fetch(`${url}/incr/${encodeURIComponent(KEY)}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -60,10 +56,10 @@ export default async function handler(req) {
       const j = await incr.json().catch(() => ({}));
       const value = Number(j?.result);
       if (!Number.isFinite(value)) throw new Error(`Bad incr result: ${JSON.stringify(j)}`);
-      return new Response(JSON.stringify({ value }), { status: 200, headers });
+      return respond(value, format, headersJSON, headersSVG);
     }
 
-    // action === "get": { result: <valor_o_null> }
+    // action === "get"
     const getRes = await fetch(`${url}/get/${encodeURIComponent(KEY)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -71,7 +67,6 @@ export default async function handler(req) {
     let current = j?.result;
 
     if (current === null || current === undefined || current === "") {
-      // Si no existe, inicializa a 0: { result: "OK" }
       const setRes = await fetch(`${url}/set/${encodeURIComponent(KEY)}/0`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -84,11 +79,45 @@ export default async function handler(req) {
     }
 
     const value = Number(current);
-    return new Response(JSON.stringify({ value: Number.isFinite(value) ? value : 0 }), { status: 200, headers });
+    return respond(Number.isFinite(value) ? value : 0, format, headersJSON, headersSVG);
   } catch (e) {
+    if (format === "svg") {
+      return new Response(svgNumber(0), { status: 200, headers: headersSVG });
+    }
     return new Response(JSON.stringify({ value: 0, note: "upstash-fallback", err: String(e) }), {
       status: 200,
-      headers,
+      headers: headersJSON,
     });
   }
+}
+
+function respond(value, format, headersJSON, headersSVG) {
+  if (format === "svg") {
+    return new Response(svgNumber(value), { status: 200, headers: headersSVG });
+  }
+  return new Response(JSON.stringify({ value }), { status: 200, headers: headersJSON });
+}
+
+// SVG simple que emula texto verde en pantalla
+function svgNumber(n) {
+  const txt = String(n);
+  return `
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="200" viewBox="0 0 260 200">
+  <rect width="100%" height="100%" fill="none"/>
+  <g filter="url(#g)">
+    <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+          font-family="monospace" font-size="48" fill="#00ff00">
+      ${escapeXml(txt)}
+    </text>
+  </g>
+  <defs>
+    <filter id="g">
+      <feGaussianBlur stdDeviation="0.6"/>
+    </filter>
+  </defs>
+</svg>`.trim();
+}
+
+function escapeXml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
