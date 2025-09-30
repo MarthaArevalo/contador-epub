@@ -1,22 +1,28 @@
-// api/epub.js — Proxy persistente a CountAPI (recomendado)
-export default async function handler(req, res) {
-  const NS  = "las_marginadas_hijas_de_eva";  // tu namespace
-  const KEY = "descargas_epub";               // tu clave
+// api/epub.js — Edge Runtime (fetch siempre disponible)
+export const config = { runtime: "edge" };
+
+export default async function handler(req) {
+  const NS  = "las_marginadas_hijas_de_eva";
+  const KEY = "descargas_epub";
   const BASE = "https://api.countapi.xyz";
 
-  // CORS para poder llamarlo desde Neocities
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Cache-Control", "no-store");
+  // CORS + no cache
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8"
+  };
 
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return new Response(null, { status: 204, headers });
   }
 
-  const action = (req.query.action || "get").toLowerCase();
-
   try {
+    const url = new URL(req.url);
+    const action = (url.searchParams.get("action") || "get").toLowerCase();
+
     if (action === "get") {
       let r = await fetch(`${BASE}/get/${NS}/${KEY}`);
       if (r.status === 404) {
@@ -24,18 +30,18 @@ export default async function handler(req, res) {
         r = await fetch(`${BASE}/get/${NS}/${KEY}`);
       }
       const j = await r.json();
-      return res.status(200).json({ value: Number(j?.value) || 0 });
+      return new Response(JSON.stringify({ value: Number(j?.value) || 0 }), { status: 200, headers });
     }
 
     if (action === "hit") {
       const r = await fetch(`${BASE}/hit/${NS}/${KEY}`);
       const j = await r.json();
-      return res.status(200).json({ value: Number(j?.value) || 0 });
+      return new Response(JSON.stringify({ value: Number(j?.value) || 0 }), { status: 200, headers });
     }
 
-    return res.status(400).json({ error: "bad action" });
+    return new Response(JSON.stringify({ error: "bad action" }), { status: 400, headers });
   } catch (e) {
-    // Si CountAPI falla, no rompas la página
-    return res.status(200).json({ value: 0, note: "fallback" });
+    // Si algo falla, devolvemos un fallback (sin romper CORS)
+    return new Response(JSON.stringify({ value: 0, note: "fallback" }), { status: 200, headers });
   }
 }
