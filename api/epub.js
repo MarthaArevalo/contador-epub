@@ -1,4 +1,4 @@
-// api/epub.js — Persistente con Upstash/Redis (Edge Runtime) + compat nombres de variables
+// api/epub.js — Upstash Redis (REST) en Edge Runtime, leyendo JSON {result:...}
 export const config = { runtime: "edge" };
 
 export default async function handler(req) {
@@ -11,8 +11,7 @@ export default async function handler(req) {
   };
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
 
-  // Lee variables con cualquiera de los nombres comunes (KV_* o UPSTASH_*)
-  // Edge Runtime soporta process.env; Deno.env por compat.
+  // Lee variables con cualquiera de los nombres comunes
   const getEnv = (k) =>
     (typeof process !== "undefined" && process.env?.[k]) ||
     (typeof Deno !== "undefined" && Deno.env.get(k));
@@ -20,7 +19,7 @@ export default async function handler(req) {
   const url =
     getEnv("KV_REST_API_URL") ||
     getEnv("UPSTASH_REDIS_REST_URL") ||
-    getEnv("REDIS_REST_URL") || // por si alguna integración alternativa
+    getEnv("REDIS_REST_URL") ||
     null;
 
   const token =
@@ -29,9 +28,10 @@ export default async function handler(req) {
     getEnv("REDIS_REST_TOKEN") ||
     null;
 
-  // Ruta de diagnóstico opcional: /api/epub?action=diag
   const u = new URL(req.url);
   const action = (u.searchParams.get("action") || "get").toLowerCase();
+
+  // Diagnóstico opcional
   if (action === "diag") {
     return new Response(
       JSON.stringify({
@@ -39,7 +39,6 @@ export default async function handler(req) {
         hasUrl: Boolean(url),
         hasToken: Boolean(token),
         urlPreview: url ? url.slice(0, 30) + "..." : null,
-        note: "Si hasUrl o hasToken es false, revisa Environment Variables en Vercel.",
       }),
       { status: 200, headers }
     );
@@ -53,39 +52,38 @@ export default async function handler(req) {
 
   try {
     if (action === "hit") {
-      // INCR key y devuelve el nuevo valor (texto plano)
+      // INCR key → { result: <nuevo_valor> }
       const incr = await fetch(`${url}/incr/${encodeURIComponent(KEY)}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!incr.ok) {
-        const t = await incr.text();
-        throw new Error(`Upstash incr failed: ${incr.status} ${t}`);
-      }
-      const valText = await incr.text();
-      const value = Number(valText);
-      return new Response(JSON.stringify({ value: Number.isFinite(value) ? value : 0 }), { status: 200, headers });
+      const j = await incr.json().catch(() => ({}));
+      const value = Number(j?.result);
+      if (!Number.isFinite(value)) throw new Error(`Bad incr result: ${JSON.stringify(j)}`);
+      return new Response(JSON.stringify({ value }), { status: 200, headers });
     }
 
-    // action === "get": lee el valor; si no existe, inicializa en 0
+    // action === "get": { result: <valor_o_null> }
     const getRes = await fetch(`${url}/get/${encodeURIComponent(KEY)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    let bodyText = await getRes.text(); // puede venir vacío si no existe
+    let j = await getRes.json().catch(() => ({}));
+    let current = j?.result;
 
-    if (!bodyText) {
+    if (current === null || current === undefined || current === "") {
+      // Si no existe, inicializa a 0: { result: "OK" }
       const setRes = await fetch(`${url}/set/${encodeURIComponent(KEY)}/0`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!setRes.ok) {
-        const t = await setRes.text();
-        throw new Error(`Upstash set failed: ${setRes.status} ${t}`);
+        const txt = await setRes.text();
+        throw new Error(`set failed: ${setRes.status} ${txt}`);
       }
-      bodyText = "0";
+      current = 0;
     }
 
-    const value = Number(bodyText);
+    const value = Number(current);
     return new Response(JSON.stringify({ value: Number.isFinite(value) ? value : 0 }), { status: 200, headers });
   } catch (e) {
     return new Response(JSON.stringify({ value: 0, note: "upstash-fallback", err: String(e) }), {
